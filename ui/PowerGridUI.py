@@ -3,7 +3,7 @@ from tkinter import messagebox
 from PIL import Image, ImageTk
 import os
 import json
-from utils.constants import RES_TOKEN_POS
+from utils.constants import RES_TOKEN_POS, CITIES
 
 class PowerGridUI:
     def __init__(self, root, get_game_state, action_handler):
@@ -25,6 +25,7 @@ class PowerGridUI:
         
         # Load and place the map image
         self.load_map()
+        self.load_city_labels()
 
         # Load the tile image containing all power plant cards
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -49,6 +50,9 @@ class PowerGridUI:
         self.resource_images_sm = {'coal': coal_image_sm, 'oil': oil_image_sm, 'trash': trash_image_sm, 'uranium': uranium_image_sm}
 
         self.power_plant_cards = self.load_power_plant_cards()
+
+        self.resource_frames = {}  # (player_name, power_plant_id) -> resource_frame
+        self.resource_purchase_frames = {}  # (player_name, power_plant_id) -> purchase_frame
 
 
     def create_scrollable_container(self):
@@ -131,18 +135,143 @@ class PowerGridUI:
 
     def on_canvas_click(self, event):
         x, y = event.x, event.y
-        print(f"Canvas clicked at ({x}, {y})")
-        self.resources.refill_resources(4, 2)
-        # Reload the resources on the canvas
-        self.load_resources(self.resources.cur_resources)
-        self.update_resource_section(self.resources.remaining_resources)
+        print(f"({x}, {y})")
+        if event.y < 730:
+            self.resources.refill_resources(4, 2)
+            # Reload the resources on the canvas
+            self.load_resources(self.resources.cur_resources)
+            self.update_resource_section(self.resources.remaining_resources)
+        
+        self.check_click_city(x, y)
+    
+    def check_click_city(self, x, y):
+        # Check if click is within 10px of any city position
+        clicked_city = None
+        for name, info in CITIES.items():
+            cx, cy = info['pos']
+            if abs(x - cx) <= 10 and abs(y - cy) <= 10:
+                clicked_city = name
+                city_x, city_y = cx, cy
+                break
+
+        if clicked_city:
+            # Ask for build confirmation
+            result = self.action_handler('can_build_house', city_name=clicked_city)
+            print('RESULT:', result)
+            if result is not None and isinstance(result, dict):
+                if not result.get("success", False):
+                    messagebox.showerror("Error", result.get("message", "Unable to build house"))
+                    return
+                else:
+                    # Show connection costs to neighbors
+                    self.city_cost_labels = []
+                    for neighbor, cost in CITIES[clicked_city]['neighbors']:
+                        nx, ny = CITIES[neighbor]['pos']
+                        # midpoint, offset slightly downwards
+                        mx = (city_x + nx) // 2
+                        my = ((city_y + ny) // 2)
+                        r = 12  # radius for circular background
+                        # Draw circle
+                        oval_id = self.map_canvas.create_oval(
+                            mx - r, my - r, mx + r, my + r,
+                            fill='white', outline=''
+                        )
+                        # Draw cost text
+                        text_id = self.map_canvas.create_text(
+                            mx, my,
+                            text=str(cost),
+                            font=('Helvetica', 8, 'bold')
+                        )
+                        self.map_canvas.tag_raise(oval_id)
+                        self.map_canvas.tag_raise(text_id)
+                        self.city_cost_labels.extend([oval_id, text_id])
+
+                    response = messagebox.askyesno(
+                        "Build House",
+                        f"Do you want to build a house in {clicked_city}? The cost is {result['cost']}."
+                    )
+
+                    # Remove the cost labels regardless of choice
+                    for lid in self.city_cost_labels:
+                        self.map_canvas.delete(lid)
+                    self.city_cost_labels.clear()
+
+                    # If confirmed, call game logic handler
+                    if response:
+                        self.action_handler('build_house', city_name=clicked_city, cost=result['cost'])
     
     
     def update_status(self, phase_name, current_player_name):
         self.map_canvas.itemconfig(self.phase_label_canvas, text=f"Phase: {phase_name}")
         self.map_canvas.itemconfig(self.current_player_label_canvas, text=f"Current Player: {current_player_name}")
     
+    def load_city_labels(self):
+        """
+        Overlay each city name on the map canvas, 15px below its defined coordinates.
+        """
+        # Remove any previously drawn city labels
+        if hasattr(self, 'city_label_shapes'):
+            for cid in self.city_label_shapes:
+                self.map_canvas.delete(cid)
+        else:
+            self.city_label_shapes = []
 
+        for name, info in CITIES.items():
+            x, y = info['pos']
+            # Draw text directly on the canvas
+            text_id = self.map_canvas.create_text(
+                x-18, y, 
+                text=name, 
+                font=('Arial', 8, 'bold'),
+                fill='black',
+                anchor='nw'
+            )
+            bbox = self.map_canvas.bbox(text_id)
+            rect_id = self.map_canvas.create_rectangle(
+                bbox[0]-2, bbox[1]-2,
+                bbox[2]+2, bbox[3]+2,
+                fill='lightgrey', outline=''
+            )
+            # Make sure rectangle is just behind its own text
+            self.map_canvas.tag_lower(rect_id, text_id)
+
+            self.city_label_shapes.extend([rect_id, text_id])
+    
+    def add_house(self, city_name, color, house_index):
+        """
+        Adds a house to the specified city on the map canvas.
+
+        Args:
+            city_name (str): The name of the city where the house will be added.
+            color (str): The color of the house.
+            house_index (int): The index of the house (1, 2, or 3).
+        """
+        if city_name not in CITIES:
+            raise ValueError(f"City '{city_name}' does not exist in the CITIES dictionary.")
+
+        x, y = CITIES[city_name]['pos']
+
+        # Determine the position of the house based on the house index
+        if house_index == 1:
+            house_x, house_y = x, y - 10
+        elif house_index == 2:
+            house_x, house_y = x - 6, y
+        elif house_index == 3:
+            house_x, house_y = x + 6, y
+        else:
+            raise ValueError("Invalid house_index. Must be 1, 2, or 3.")
+
+        # Draw the house as a square on the canvas
+        house_size = 9  # Size of the square
+        house_id = self.map_canvas.create_rectangle(
+            house_x - house_size // 2, house_y - house_size // 2,
+            house_x + house_size // 2, house_y + house_size // 2,
+            fill=color, outline="white", width=2
+        )
+
+        # Ensure the house is on top of other items
+        self.map_canvas.tag_raise(house_id)
+    
     def load_resources(self, resources):
         # Clear existing resource images
         for image_id in self.resource_image_ids:
@@ -150,12 +279,45 @@ class PowerGridUI:
         self.resource_image_ids.clear()
 
         for res_type, positions in RES_TOKEN_POS.items():
+            is_first_available = True
             for i, (cost, available) in enumerate(resources[res_type]):
                 if available:
                     pos = positions[i]
                     image_id = self.map_canvas.create_image(pos[0], pos[1], anchor=tk.NW, image=self.resource_images_sm[res_type])
+                    if is_first_available:
+                        self.map_canvas.tag_bind(image_id, "<Button-1>", lambda event, res_type=res_type, cost=cost: self.handle_click_res_token(res_type, cost))
+                    else:
+                        self.map_canvas.tag_bind(image_id, "<Button-1>", lambda event: messagebox.showinfo("Alert", "Please purchase the resource token from the very left"))
                     self.resource_image_ids.append(image_id)
+                    is_first_available = False
+
+    def handle_click_res_token(self, res_type, cost):
+        result = self.action_handler('add_res_to_purchase', res_type=res_type, cost=cost)
+        
+        # If the result indicates failure, show an error message.
+        if result is not None and isinstance(result, dict) and not result.get("success", False):
+            messagebox.showerror("Error", result.get("message", "Error adding resource"))
     
+    def show_power_plant_selection_menu(self, valid_cards, res_type, cost):
+        # For simplicity, we create a simple dialog with a listbox.
+        # In a real implementation you might use a Toplevel window with radio buttons or similar.
+        menu = tk.Toplevel(self.root)
+        menu.title("Select a Power Plant")
+        tk.Label(menu, text=f"Select a power plant to add {res_type} (cost {cost}):").pack(padx=10, pady=10)
+        
+        var = tk.StringVar(value=valid_cards[0])
+        for card in valid_cards:
+            tk.Radiobutton(menu, text=f"Power Plant {card}", variable=var, value=card).pack(anchor="w", padx=10)
+        
+        selected = [None]  # mutable container
+        
+        def on_confirm():
+            selected[0] = var.get()
+            menu.destroy()
+        
+        tk.Button(menu, text="OK", command=on_confirm).pack(pady=10)
+        menu.wait_window()
+        return selected[0]
 
     def load_power_plant_cards(self):
         # Load the JSON file into a dictionary
@@ -217,79 +379,176 @@ class PowerGridUI:
             raise ValueError("Invalid card_id")
 
 
-    def create_player_info(self, players):
+    def create_player_info(self, players, phase):
         # Clear existing widgets in player_info_frame
         for widget in self.player_info_frame.winfo_children():
             widget.destroy()
         
-        self.control_frames = {} # Keep references to control frames
+        # Dictionaries to store references
+        self.player_sections = {}            # Maps player name to their base section frame
+        self.control_frames = {}             # Maps player name to their control panel
+        self.card_image_labels = {}          # (player_name, card_id) -> ppw card image labels
+        self.resource_frames = {}            # (player_name, card_id) -> resource frame
+        self.resource_purchase_frames = {}   # (player_name, card_id) -> purchase frame
 
-        power_plant_card_size = 60 if len(players) > 4 else 80
+        self.power_plant_card_size = 60 if len(players) > 4 else 80
         for player in players:
             player_section = tk.Frame(self.player_info_frame, bd=2, relief="solid", padx=10, pady=0)
             player_section.pack(fill=tk.BOTH, pady=5)
+            self.player_sections[player.name] = player_section
 
-            player_name_label = tk.Label(player_section, text=player.name, fg=player.color)
-            player_name_label.grid(row=0, column=0, columnspan=3, sticky="w")
+            # Control panel in column 3
+            control_frame = tk.Frame(player_section)
+            control_frame.grid(row=0, column=3, rowspan=3, sticky="nsew")
+            self.control_frames[player.name] = control_frame
 
-            player_city_label = tk.Label(player_section, text=f"Cities: {player.cities}")
-            player_city_label.grid(row=0, column=1, sticky="n")
-
-            player_money_label = tk.Label(player_section, text=f"Money: {player.money}")
-            player_money_label.grid(row=0, column=2, sticky="n")
-
-            for j, power_plant_id in enumerate(player.power_plants):
-                if j < 3:  # Ensure only up to 3 power plant cards are displayed
-                    card_image = self.load_card_image(card_id=power_plant_id)
-                    card_image = card_image.resize((power_plant_card_size, power_plant_card_size), Image.Resampling.LANCZOS)
-                    card_image_tk = ImageTk.PhotoImage(card_image)
-                    power_plant_label = tk.Label(player_section, image=card_image_tk)
-                    power_plant_label.image = card_image_tk  # Keep a reference
-                    power_plant_label.grid(row=1, column=j, padx=5, pady=5, sticky="nsew")
-        
-                    # Create labels for resources below each card
-                    resource_frame = tk.Frame(player_section)
-                    resource_frame.grid(row=2, column=j)
-        
-                    resources_for_card = player.resources.get(power_plant_id, {})
-                    for res_type, amount in resources_for_card.items():
-                        for _ in range(amount):
-                            resource_label = tk.Label(resource_frame, image=self.resource_images[res_type])
-                            resource_label.image = self.resource_images[res_type]  # Keep a reference
-                            resource_label.pack(side=tk.LEFT)
+            # Iterate over player's owned power plants stored as dict
+            self.update_player_info(player, phase)
 
             # Make the columns expand equally
             for j in range(3):
                 player_section.grid_columnconfigure(j, weight=1)
             
             player_section.grid_columnconfigure(3, minsize=80)
-
-            # Control panel in column 3
-            control_frame = tk.Frame(player_section)
-            control_frame.grid(row=0, column=3, rowspan=3, sticky="nsew")
-            self.control_frames[player.name] = control_frame
     
+    def update_player_info(self, player, phase):
+        player_section = self.player_sections.get(player.name)
+        is_initial_render = True
+        if hasattr(player_section, "header_frame"):
+            player_section.header_frame.destroy()
+            is_initial_render = False
 
-    def update_player_control(self, current_player_name):
+        header_frame = tk.Frame(player_section)
+        header_frame.grid(row=0, column=0, columnspan=3, sticky="w")
+        player_section.header_frame = header_frame
+
+        tk.Label(header_frame, text=player.name, fg=player.color).pack(side=tk.LEFT, padx=(0,10))
+        tk.Label(header_frame, text=f"Cities: {len(player.cities)}").pack(side=tk.LEFT, padx=(0,10))
+        tk.Label(header_frame, text=f"Money: {player.money}").pack(side=tk.LEFT)
+
+        for j, (card_id, owned_pp) in enumerate(player.owned_power_plants.items()):
+            if j < 3:  # Limit display to 3 power plants
+                key = (player.name, card_id)
+
+                if is_initial_render or phase == 'Auction':
+                    if key in self.card_image_labels:
+                        self.card_image_labels[key].destroy()
+                    
+                    card_image = self.load_card_image(card_id=card_id)
+                    card_image = card_image.resize((self.power_plant_card_size, self.power_plant_card_size), Image.Resampling.LANCZOS)
+                    card_image_tk = ImageTk.PhotoImage(card_image)
+                    power_plant_label = tk.Label(player_section, image=card_image_tk)
+                    power_plant_label.image = card_image_tk  # Keep a reference
+                    power_plant_label.grid(row=1, column=j, padx=5, pady=5, sticky="nsew")
+                    self.card_image_labels[key] = power_plant_label
+
+                # RESOURCE FRAME: Create or update the resource frame for resources_on_card
+                if key in self.resource_frames:
+                    resource_frame = self.resource_frames[key]
+                    for widget in resource_frame.winfo_children():
+                        widget.destroy()
+
+                resource_frame = tk.Frame(player_section)
+                resource_frame.grid(row=1, column=j)
+                self.resource_frames[key] = resource_frame
+                
+                # Render resource icons for owned_pp.resources_on_card
+                for res_type, amount in owned_pp.resources_on_card.items():
+                    for _ in range(amount):
+                        lbl = tk.Label(resource_frame, image=self.resource_images[res_type])
+                        lbl.image = self.resource_images[res_type]  # keep reference
+                        lbl.pack(side=tk.LEFT)
+                
+                print(f'PHASE!: {phase}')
+                if phase == "Resources": 
+                    if key not in self.resource_purchase_frames:
+                        purchase_frame = tk.Frame(player_section, bg="lightgray")
+                        purchase_frame.grid(row=2, column=j, pady=2)
+                        self.resource_purchase_frames[key] = purchase_frame
+                    else:
+                        purchase_frame = self.resource_purchase_frames[key]
+                        for widget in purchase_frame.winfo_children():
+                            widget.destroy()
+                    
+                    # Render resource icons for owned_pp.resources_to_purchase
+                    for res_type, amount in owned_pp.resources_to_purchase.items():
+                        for _ in range(amount):
+                            lbl = tk.Label(purchase_frame, image=self.resource_images[res_type])
+                            lbl.image = self.resource_images[res_type]  # keep reference
+                            lbl.pack(side=tk.LEFT)
+                            lbl.bind("<Button-1>", lambda event, card_id=card_id, res_type=res_type: self.handle_click_res_to_purchase(card_id, res_type))
+                
+
+    def update_player_control(self):
         current_state = self.get_game_state()
         cur_phase = current_state["phase"]
         cur_round = current_state["round"]
+        current_player_index = current_state["current_player_index"]
+        current_player = current_state["players"][current_player_index]
 
         for player_name, control_frame in self.control_frames.items():
             for widget in control_frame.winfo_children():
                 widget.destroy()
             
-            if player_name == current_player_name:
-                if cur_phase == 'Auction' and cur_round > 1:
-                    button = tk.Button(control_frame, text='Pass Auction', command=lambda pn=current_player_name: self.handle_pass(pn))
-                    button.grid(row=1, column=0, pady=5)
-    
+            if player_name == current_player.name and cur_phase == 'Auction' and cur_round > 1:
+                button = tk.Button(control_frame, text='Pass Auction', command=lambda pn=current_player.name: self.handle_pass(pn))
+                button.grid(row=1, column=0, pady=5)
+            
+            if player_name == current_player.name and cur_phase == "Resources":
+                # Confirm Purchase button: enabled only if money_to_pay is NOT zero
+                confirm_btn = tk.Button(
+                    control_frame,
+                    text="Confirm",
+                    width=7,
+                    command=self.handle_purchase_resources,
+                )
+                if current_player.money_to_pay == 0:
+                    confirm_btn.config(state=tk.DISABLED)
+                confirm_btn.grid(row=0, column=0, pady=5, sticky="en")
+
+                # Pass button: enabled only if money_to_pay is zero
+                pass_btn = tk.Button(
+                    control_frame,
+                    text="Pass",
+                    width=7,
+                    command=lambda pn=current_player.name: self.handle_pass(pn)
+                )
+                if current_player.money_to_pay != 0:
+                    pass_btn.config(state=tk.DISABLED)
+                pass_btn.grid(row=1, column=0, pady=5, sticky="en")
+
+                # Label to display current money to pay
+                money_label = tk.Label(control_frame, text=f"Money to Pay: {current_player.money_to_pay}")
+                money_label.grid(row=2, column=0, columnspan=2, pady=5)
+            
+            if player_name == current_player.name and cur_phase == "Houses":
+                button = tk.Button(control_frame, text='Pass Building', command=lambda pn=current_player.name: self.handle_pass(pn))
+                button.grid(row=1, column=0, pady=5)
+
 
     def handle_pass(self, player_name):
         response = messagebox.askyesno("Pass", f"{player_name}, are you sure you want to pass?")
         if response:
             self.action_handler('player_pass')
-    
+        
+    def handle_purchase_resources(self):
+        current_state = self.get_game_state()
+        current_player_index = current_state["current_player_index"]
+        current_player = current_state["players"][current_player_index]
+
+        if current_player.money_to_pay > current_player.money:
+            messagebox.showerror("Insufficient Funds", f"{current_player.name}, you don't have enough money to pay.")
+            return
+        
+        response = messagebox.askyesno("Confirm Purchase", f"{current_player.name}, do you confirm the purchase?")
+        if response:
+            self.action_handler('purchase_resources')
+            
+    def handle_click_res_to_purchase(self, card_id, res_type):
+        result = self.action_handler('put_back_res_to_purchase', card_id=card_id, res_type=res_type)
+        if result is not None and isinstance(result, dict) and not result.get("success", False):
+            messagebox.showerror("Error", result.get("message", "Failed to put back resource"))
+        
 
     def create_resource_section(self, remaining_resources):
         # Create a frame for resources under the map

@@ -73,6 +73,32 @@ class Resources:
                 self.cur_resources[res_type][available_slots[i]] = (self.cur_resources[res_type][available_slots[i]][0], True)
                 self.remaining_resources[res_type] -= 1
     
+    def remove_left_most_resources(self, res_type):
+        found = False
+        for i, (cost, available) in enumerate(self.cur_resources[res_type]):
+            if available:
+                self.cur_resources[res_type][i] = (cost, False)
+                found = True
+                break
+        return found
+    
+    def add_back_left_most_resource(self, res_type):
+        """ also return cost for this resource token, -1 if no available slot to add back 
+        """
+        last_unavailable_idx = -1
+        for i, (cost, available) in enumerate(self.cur_resources[res_type]):
+            if not available:
+                last_unavailable_idx = i
+            else:
+                break
+        if last_unavailable_idx == -1:
+            return -1
+        
+        cost, available = self.cur_resources[res_type][last_unavailable_idx]
+        self.cur_resources[res_type][last_unavailable_idx] = (cost, True)
+        return cost
+        
+    
     def validate_purchase(self, res_purchases, available_money):
         current_market_resources = self.get_current_market_resources()
         total_cost = 0
