@@ -157,7 +157,6 @@ class PowerGridUI:
         if clicked_city:
             # Ask for build confirmation
             result = self.action_handler('can_build_house', city_name=clicked_city)
-            print('RESULT:', result)
             if result is not None and isinstance(result, dict):
                 if not result.get("success", False):
                     messagebox.showerror("Error", result.get("message", "Unable to build house"))
