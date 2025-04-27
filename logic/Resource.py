@@ -116,7 +116,15 @@ class Resources:
             available_resources.sort(reverse=True)
             for cost, idx in available_resources[:amount]:
                 self.cur_resources[res_type][idx] = (cost, False)
-
+    
+    def return_resources_to_remaining(self, owned_power_plants):
+        for owned_pp in owned_power_plants.values():
+            if owned_pp.card.card_type == 'renewable' or not owned_pp.resources_to_power:
+                continue
+            for res_type, amount in owned_pp.resources_to_power.items():
+                self.remaining_resources[res_type] += amount
+            owned_pp.resources_to_power = {}
+            
     def __repr__(self):
         return f"Resources({self.cur_resources})"
 

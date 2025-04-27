@@ -13,7 +13,7 @@ from Deck import Deck
 from Resource import Resources
 from Cities import Cities
 from AuctionLogic import AuctionLogic
-from utils.constants import PHASES, CITIES, REGION_LIMITS
+from utils.constants import PHASES, CITIES, REGION_LIMITS, CITIES_TO_CASH
 import random
 
 
@@ -86,20 +86,21 @@ class Game:
         self.cities = Cities()
         self.occupied_regions = set()
 
-        self.step = 3
-        self.phase_index = 1
+        self.step = 1
+        self.phase_index = 0
         # round is useful when determining player order
         self.round = 1
 
         self.current_player_index = 0
 
-        self.ui = PowerGridUI(root, self.get_game_state, self.handle_action)
-
         self.initialize_game_state()
+
+        self.ui = PowerGridUI(root, self.get_game_state, self.handle_action)
         self.initialize_game_ui()
         self.sort_players()
         self.next_phase()
 
+        # [TODO] choose regions before game starts
         self.max_regions = REGION_LIMITS[len(self.players)]
 
     def __repr__(self):
@@ -152,6 +153,12 @@ class Game:
                 owned_pp.resources_on_card = pp_resources[i].get(pp_card_id, {})
                 owned_pp_dict[pp_card_id] = owned_pp
             player.owned_power_plants = owned_pp_dict
+
+            # [TODO] Can be removed later when the last phase is implemented
+            for city_name, player_names in self.cities.built_cities.items():
+                for city_owner_name in player_names:
+                    if name == city_owner_name:
+                        player.cities.append(city_name)
             self.players.append(player)
 
     def initialize_power_plant_market(self):
@@ -168,10 +175,16 @@ class Game:
             return self.add_res_to_purchase(kwargs["res_type"], kwargs["cost"])
         elif action == "put_back_res_to_purchase":
             return self.put_back_res_to_purchase(kwargs["card_id"], kwargs["res_type"])
+        elif action == "add_res_to_power":
+            return self.add_res_to_power(kwargs["card_id"], kwargs["res_type"])
+        elif action == "remove_res_from_power":
+            return self.remove_res_from_power(kwargs["card_id"], kwargs["res_type"])
         elif action == "can_build_house":
             return self.can_build_house(kwargs["city_name"])
         elif action == "build_house":
             return self.build_house(kwargs["city_name"], kwargs["cost"])
+        elif action == "generate_power":
+            return self.generate_power()
 
     def sort_players(self):
         if self.round == 1:
@@ -195,6 +208,7 @@ class Game:
             "phase": PHASES[self.phase_index],
             "round": self.round,
             "current_player_index": self.current_player_index,
+            "built_cities": self.cities.built_cities,
         }
 
         return game_state
@@ -360,6 +374,43 @@ class Game:
                 "success": False,
                 "message": "Could not add resource back to market.",
             }
+    
+    def add_res_to_power(self, card_id, res_type):
+        current_player = self.players[self.current_player_index]
+        owned_pp = current_player.owned_power_plants.get(card_id)
+        if not owned_pp:
+            return {"success": False, "message": "Power plant not found."}
+        if owned_pp.resources_on_card.get(res_type, 0) <= 0:
+            return {
+                "success": False,
+                "message": f"No {res_type} resource on card.",
+            }
+        
+        owned_pp.resources_on_card[res_type] -= 1
+        owned_pp.resources_to_power[res_type] = (
+            owned_pp.resources_to_power.get(res_type, 0) + 1
+        )
+        self.ui.update_player_info(current_player, PHASES[self.phase_index])
+        return {"success": True}
+
+    def remove_res_from_power(self, card_id, res_type):
+        current_player = self.players[self.current_player_index]
+        owned_pp = current_player.owned_power_plants.get(card_id)
+        if not owned_pp:
+            return {"success": False, "message": "Power plant not found."}
+        
+        if owned_pp.resources_to_power.get(res_type, 0) <= 0:
+            return {
+                "success": False,
+                "message": f"No {res_type} resource in power list.",
+            }
+        
+        owned_pp.resources_to_power[res_type] -= 1
+        owned_pp.resources_on_card[res_type] = (
+            owned_pp.resources_on_card.get(res_type, 0) + 1
+        )
+        self.ui.update_player_info(current_player, PHASES[self.phase_index])
+        return {"success": True}
 
     def confirm_purchase(self):
         current_player = self.players[self.current_player_index]
@@ -440,6 +491,27 @@ class Game:
         self.ui.add_house(
             city_name, current_player.color, len(self.cities.built_cities[city_name])
         )
+    
+    def generate_power(self):
+        current_player = self.players[self.current_player_index]
+        cities_can_power = 0
+        for owned_pp in current_player.owned_power_plants.values():
+            if owned_pp.card.card_type == "renewable":
+                cities_can_power += owned_pp.card.cities_to_power
+            elif sum(owned_pp.resources_to_power.values()) > 0:
+                if owned_pp.card.resource_number != sum(owned_pp.resources_to_power.values()):
+                    return {"success": False, "message": f"Incorrect number of resources to power for power plant card: {owned_pp.card.card_id}"}
+                cities_can_power += owned_pp.card.cities_to_power
+        
+        cities_can_power = min(cities_can_power, len(current_player.cities))
+        cash = CITIES_TO_CASH[cities_can_power]
+        self.resources.return_resources_to_remaining(current_player.owned_power_plants)
+        current_player.money += cash
+        self.ui.update_player_info(current_player, PHASES[self.phase_index])
+        self.ui.update_resource_section(self.resources.remaining_resources)
+        self.player_pass()
+
+        return {"success": True, "message": f"Generated {cash} cash from {cities_can_power} cities"}
 
 
 if __name__ == "__main__":

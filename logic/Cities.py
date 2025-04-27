@@ -4,7 +4,8 @@ import heapq
 class Cities:
     def __init__(self):
         # Track built cities: city_name -> list of owners
-        self.built_cities = {}  # only store cities once built
+        # self.built_cities = {}  # only store cities once built
+        self.built_cities = {'Duisburg': ['Player 4', 'Player 2'], 'Duesseldorf': ['Player 4'], 'Dortmund': ['Player 1'], 'Koln': ['Player 1'], 'Munster': ['Player 2'], "Trier": ['Player 3', 'Player 2'], 'Essen': ['Player 3'], 'Aachen': ['Player 3']}
         # Track regions where cities have been built
         self.occupied_regions = []
         # Validate neighbor consistency on initialization

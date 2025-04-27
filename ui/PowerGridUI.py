@@ -26,6 +26,7 @@ class PowerGridUI:
         # Load and place the map image
         self.load_map()
         self.load_city_labels()
+        self.load_houses()
 
         # Load the tile image containing all power plant cards
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -50,9 +51,6 @@ class PowerGridUI:
         self.resource_images_sm = {'coal': coal_image_sm, 'oil': oil_image_sm, 'trash': trash_image_sm, 'uranium': uranium_image_sm}
 
         self.power_plant_cards = self.load_power_plant_cards()
-
-        self.resource_frames = {}  # (player_name, power_plant_id) -> resource_frame
-        self.resource_purchase_frames = {}  # (player_name, power_plant_id) -> purchase_frame
 
 
     def create_scrollable_container(self):
@@ -271,6 +269,16 @@ class PowerGridUI:
         # Ensure the house is on top of other items
         self.map_canvas.tag_raise(house_id)
     
+    def load_houses(self):
+        players = self.game_state["players"]
+        built_cities = self.game_state["built_cities"]
+
+        for player in players:
+            for city_name, player_names in built_cities.items():
+                for house_index, player_name in enumerate(player_names):
+                    if player_name == player.name:
+                        self.add_house(city_name, player.color, house_index + 1)
+    
     def load_resources(self, resources):
         # Clear existing resource images
         for image_id in self.resource_image_ids:
@@ -389,6 +397,7 @@ class PowerGridUI:
         self.card_image_labels = {}          # (player_name, card_id) -> ppw card image labels
         self.resource_frames = {}            # (player_name, card_id) -> resource frame
         self.resource_purchase_frames = {}   # (player_name, card_id) -> purchase frame
+        self.resource_power_frames = {}   # (player_name, card_id) -> power frame
 
         self.power_plant_card_size = 60 if len(players) > 4 else 80
         for player in players:
@@ -451,12 +460,12 @@ class PowerGridUI:
                 resource_frame.grid(row=1, column=j)
                 self.resource_frames[key] = resource_frame
                 
-                # Render resource icons for owned_pp.resources_on_card
                 for res_type, amount in owned_pp.resources_on_card.items():
                     for _ in range(amount):
                         lbl = tk.Label(resource_frame, image=self.resource_images[res_type])
                         lbl.image = self.resource_images[res_type]  # keep reference
                         lbl.pack(side=tk.LEFT)
+                        lbl.bind("<Button-1>", lambda event, card_id=card_id, res_type=res_type: self.handle_click_res_on_card(card_id, res_type, phase))
                 
                 print(f'PHASE!: {phase}')
                 if phase == "Resources": 
@@ -476,6 +485,24 @@ class PowerGridUI:
                             lbl.image = self.resource_images[res_type]  # keep reference
                             lbl.pack(side=tk.LEFT)
                             lbl.bind("<Button-1>", lambda event, card_id=card_id, res_type=res_type: self.handle_click_res_to_purchase(card_id, res_type))
+                
+                if phase == "Bureaucracy": 
+                    if key not in self.resource_power_frames:
+                        power_frame = tk.Frame(player_section, bg="lightgray")
+                        power_frame.grid(row=2, column=j, pady=2)
+                        self.resource_power_frames[key] = power_frame
+                    else:
+                        power_frame = self.resource_power_frames[key]
+                        for widget in power_frame.winfo_children():
+                            widget.destroy()
+                    
+                    # Render resource icons for owned_pp.resources_to_power
+                    for res_type, amount in owned_pp.resources_to_power.items():
+                        for _ in range(amount):
+                            lbl = tk.Label(power_frame, image=self.resource_images[res_type])
+                            lbl.image = self.resource_images[res_type]  # keep reference
+                            lbl.pack(side=tk.LEFT)
+                            lbl.bind("<Button-1>", lambda event, card_id=card_id, res_type=res_type: self.handle_click_res_to_power(card_id, res_type))
                 
 
     def update_player_control(self):
@@ -523,6 +550,10 @@ class PowerGridUI:
             if player_name == current_player.name and cur_phase == "Houses":
                 button = tk.Button(control_frame, text='Pass Building', command=lambda pn=current_player.name: self.handle_pass(pn))
                 button.grid(row=1, column=0, pady=5)
+            
+            if player_name == current_player.name and cur_phase == "Bureaucracy":
+                button = tk.Button(control_frame, text='Generate Power', command=lambda pn=current_player.name: self.handle_generate_power(pn))
+                button.grid(row=1, column=0, pady=5)
 
 
     def handle_pass(self, player_name):
@@ -542,13 +573,32 @@ class PowerGridUI:
         response = messagebox.askyesno("Confirm Purchase", f"{current_player.name}, do you confirm the purchase?")
         if response:
             self.action_handler('purchase_resources')
+    
+    def handle_generate_power(self, player_name):
+        response = messagebox.askyesno("Confirm to generate power", f"{player_name}, are you ready to generate power?")
+        if response:
+            result = self.action_handler('generate_power')
+            if result is not None and isinstance(result, dict) and not result.get("success", False):
+                messagebox.showerror("Error", result.get("message", "Failed to generate power"))
+            else:
+                messagebox.showinfo("Success", result.get("message"))
             
     def handle_click_res_to_purchase(self, card_id, res_type):
         result = self.action_handler('put_back_res_to_purchase', card_id=card_id, res_type=res_type)
         if result is not None and isinstance(result, dict) and not result.get("success", False):
             messagebox.showerror("Error", result.get("message", "Failed to put back resource"))
         
-
+    def handle_click_res_on_card(self, card_id, res_type, phase):
+        if phase == "Bureaucracy":
+            result = self.action_handler('add_res_to_power', card_id=card_id, res_type=res_type)
+            if result is not None and isinstance(result, dict) and not result.get("success", False):
+                messagebox.showerror("Error", result.get("message", "Failed to add resource to power"))
+    
+    def handle_click_res_to_power(self, card_id, res_type):
+        result = self.action_handler('remove_res_from_power', card_id=card_id, res_type=res_type)
+        if result is not None and isinstance(result, dict) and not result.get("success", False):
+            messagebox.showerror("Error", result.get("message", "Failed to remove resource from power"))
+        
     def create_resource_section(self, remaining_resources):
         # Create a frame for resources under the map
         self.resource_frame = tk.Frame(self.map_frame, width=590, height=100, bd=2, relief="solid")
