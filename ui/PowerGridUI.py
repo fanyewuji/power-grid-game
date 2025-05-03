@@ -133,12 +133,12 @@ class PowerGridUI:
 
     def on_canvas_click(self, event):
         x, y = event.x, event.y
-        print(f"({x}, {y})")
-        if event.y < 730:
-            self.resources.refill_resources(4, 2)
-            # Reload the resources on the canvas
-            self.load_resources(self.resources.cur_resources)
-            self.update_resource_section(self.resources.remaining_resources)
+        print(f"COOR ({x}, {y})")
+        # if event.y < 730:
+        #     self.resources.refill_resources(4, 2)
+        #     # Reload the resources on the canvas
+        #     self.load_resources(self.resources.cur_resources)
+        #     self.update_resource_section(self.resources.remaining_resources)
         
         self.check_click_city(x, y)
     
@@ -397,7 +397,8 @@ class PowerGridUI:
         self.card_image_labels = {}          # (player_name, card_id) -> ppw card image labels
         self.resource_frames = {}            # (player_name, card_id) -> resource frame
         self.resource_purchase_frames = {}   # (player_name, card_id) -> purchase frame
-        self.resource_power_frames = {}   # (player_name, card_id) -> power frame
+        self.resource_power_frames = {}      # (player_name, card_id) -> power frame
+        self.resource_on_hold_frames = {}    # (player_name, card_id) -> on hold frame
 
         self.power_plant_card_size = 60 if len(players) > 4 else 80
         for player in players:
@@ -466,8 +467,9 @@ class PowerGridUI:
                         lbl.image = self.resource_images[res_type]  # keep reference
                         lbl.pack(side=tk.LEFT)
                         lbl.bind("<Button-1>", lambda event, card_id=card_id, res_type=res_type: self.handle_click_res_on_card(card_id, res_type, phase))
+                        # Add right-click binding to move resource on card
+                        lbl.bind("<Button-3>", lambda event, card_id=card_id, res_type=res_type, player=player: self.handle_right_click_res_on_card(event, card_id, res_type, player))
                 
-                print(f'PHASE!: {phase}')
                 if phase == "Resources": 
                     if key not in self.resource_purchase_frames:
                         purchase_frame = tk.Frame(player_section, bg="lightgray")
@@ -504,19 +506,61 @@ class PowerGridUI:
                             lbl.pack(side=tk.LEFT)
                             lbl.bind("<Button-1>", lambda event, card_id=card_id, res_type=res_type: self.handle_click_res_to_power(card_id, res_type))
                 
+                if phase == "Auction":
+                    # if key not in self.resource_on_hold_frames:
+                    if key in self.resource_on_hold_frames:
+                        self.resource_on_hold_frames[key].destroy()
 
-    def update_player_control(self):
+                    on_hold_frame = tk.Frame(player_section, bg="lightgray", border=2)
+                    on_hold_frame.grid(row=2, column=j, pady=2)
+                    self.resource_on_hold_frames[key] = on_hold_frame
+                    # else:
+                        # on_hold_frame = self.resource_on_hold_frames[key]
+                        # for widget in on_hold_frame.winfo_children():
+                        #     widget.destroy()
+                    
+                    # Render resource icons for owned_pp.resources_on_hold
+                    for res_type, amount in owned_pp.resources_on_hold.items():
+                        print(f'owned_pp: {owned_pp.card.card_id}')
+                        print(f'res_type: {res_type}, amount: {amount}')
+                        for _ in range(amount):
+                            lbl = tk.Label(on_hold_frame, image=self.resource_images[res_type])
+                            lbl.image = self.resource_images[res_type]
+                            lbl.pack(side=tk.LEFT)
+                            lbl.bind("<Button-1>", lambda event, player=player, card_id=card_id, res_type=res_type: self.handle_click_res_on_hold(player, card_id, res_type))
+        
+        # Add left resources frame when in Auction phase and if left_resources_from_removed_pp exists and is non-empty
+        if hasattr(player_section, "left_res_frame"):
+            player_section.left_res_frame.destroy()
+
+        if phase == "Auction" and player.left_resources_from_removed_pp:
+            left_res_frame = tk.Frame(self.player_sections[player.name], bg="lightblue")
+            left_res_frame.grid(row=3, column=0, columnspan=3, sticky="w", pady=3)
+            tk.Label(left_res_frame, text="Left over resources:", bg="lightblue").pack(side=tk.LEFT, padx=5)
+            for res_type, count in player.left_resources_from_removed_pp.items():
+                for i in range(count):
+                    lbl = tk.Label(left_res_frame, image=self.resource_images[res_type])
+                    lbl.image = self.resource_images[res_type]  # keep reference
+                    lbl.pack(side=tk.LEFT, padx=2)
+                    lbl.bind("<Button-1>", lambda event, player=player, res_type=res_type: self.handle_click_left_over_res(player, res_type))
+            player_section.left_res_frame = left_res_frame  # store reference for future update
+
+    def update_player_control(self, player=None):
         current_state = self.get_game_state()
         cur_phase = current_state["phase"]
         cur_round = current_state["round"]
         current_player_index = current_state["current_player_index"]
         current_player = current_state["players"][current_player_index]
 
+        # when allocating resources to power plants, we need to update control for the auction winner instead of the "current_player"
+        current_player = player if player else current_player
+
         for player_name, control_frame in self.control_frames.items():
             for widget in control_frame.winfo_children():
                 widget.destroy()
             
-            if player_name == current_player.name and cur_phase == 'Auction' and cur_round > 1:
+            print(f'left resources: {current_player.left_resources_from_removed_pp}')
+            if player_name == current_player.name and cur_phase == 'Auction' and cur_round > 1 and not current_player.left_resources_from_removed_pp:
                 button = tk.Button(control_frame, text='Pass Auction', command=lambda pn=current_player.name: self.handle_pass(pn))
                 button.grid(row=1, column=0, pady=5)
             
@@ -555,6 +599,12 @@ class PowerGridUI:
                 button = tk.Button(control_frame, text='Generate Power', command=lambda pn=current_player.name: self.handle_generate_power(pn))
                 button.grid(row=1, column=0, pady=5)
 
+            if player_name == current_player.name and cur_phase == "Auction":
+                if current_player.left_resources_from_removed_pp:
+                    print("Confirm Button")
+                    confirm_btn = tk.Button(control_frame, text="Confirm Allocation",
+                                            command=lambda: self.handle_confirm_left_over_res_allocation(current_player))
+                    confirm_btn.grid(row=2, column=0, pady=5)
 
     def handle_pass(self, player_name):
         response = messagebox.askyesno("Pass", f"{player_name}, are you sure you want to pass?")
@@ -585,6 +635,12 @@ class PowerGridUI:
             
     def handle_click_res_to_purchase(self, card_id, res_type):
         result = self.action_handler('put_back_res_to_purchase', card_id=card_id, res_type=res_type)
+        if result is not None and isinstance(result, dict) and not result.get("success", False):
+            messagebox.showerror("Error", result.get("message", "Failed to put back resource"))
+    
+    def handle_click_res_on_hold(self, player, card_id, res_type):
+        print(f"Clicked resource on hold {res_type} on card {card_id}")
+        result = self.action_handler('put_back_res_to_left_over', player=player, card_id=card_id, res_type=res_type)
         if result is not None and isinstance(result, dict) and not result.get("success", False):
             messagebox.showerror("Error", result.get("message", "Failed to put back resource"))
         
@@ -629,4 +685,95 @@ class PowerGridUI:
         for res_type, label in self.resource_labels.items():
             res_count = remaining_resources[res_type]
             label.config(text=f"{res_type.capitalize()} Left: {res_count}")
+
+    def show_power_plant_removal_menu(self, power_plant_ids):
+        menu = tk.Toplevel(self.root)
+        menu.title("Remove Power Plant")
+        menu.protocol("WM_DELETE_WINDOW", lambda: None)  # Disable close button
+
+        tk.Label(menu, text="You already have 3 power plants. Select one to remove:").pack(padx=10, pady=10)
+
+        var = tk.StringVar(value=power_plant_ids[0])
+        for pp_id in power_plant_ids:
+            tk.Radiobutton(menu, text=f"Power Plant {pp_id}", variable=var, value=pp_id).pack(anchor="w", padx=10)
+
+        selected = [None]
+
+        def on_confirm():
+            selected[0] = var.get()
+            menu.destroy()
+
+        tk.Button(menu, text="OK", command=on_confirm).pack(pady=10)
+        menu.wait_window()
+        return selected[0]
+
+    def show_pp_to_hold_resource_menu(self, power_plant_ids):
+        """
+        Displays a menu for the user to pick a power plant to hold the resource.
+
+        Args:
+            power_plant_ids (list): List of power plant IDs owned by the player.
+
+        Returns:
+            str: The ID of the selected power plant to hold the resource.
+        """
+        menu = tk.Toplevel(self.root)
+        menu.title("Hold Resource")
+        menu.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        tk.Label(menu, text="Select a power plant to hold the resource:").pack(padx=10, pady=10)
+
+        var = tk.StringVar(value=power_plant_ids[0])
+        for pp_id in power_plant_ids:
+            tk.Radiobutton(menu, text=f"Power Plant {pp_id}", variable=var, value=pp_id).pack(anchor="w", padx=10)
+
+        selected = [None]  # mutable container
+
+        def on_confirm():
+            selected[0] = var.get()
+            menu.destroy()
+
+        tk.Button(menu, text="OK", command=on_confirm).pack(pady=10)
+        menu.wait_window()
+        return selected[0]
+        
+
+    def handle_click_left_over_res(self, player, res_type):
+        # Trigger action handler for left-over resource, pass details as needed.
+        possible_pps = self.action_handler("get_possible_pp_for_left_res", player=player, res_type=res_type)
+        print(f"Possible solutions: {possible_pps}")
+
+        if len(possible_pps) == 0:
+            messagebox.showerror("Error", "No power plants available to hold this resource.")
+            return
+        elif len(possible_pps) == 1:
+            selected_pp = possible_pps[0]
+        else:  
+            selected_pp = self.show_power_plant_removal_menu(possible_pps)
+        
+        self.action_handler("add_left_over_res_on_hold", player=player, card_id=selected_pp, res_type=res_type)
+
+    def handle_confirm_left_over_res_allocation(self, player):
+        response = messagebox.askyesno("Confirm Allocation", f"{player.name}, do you confirm the allocation of left-over resources?")
+        if response:
+            self.action_handler("confirm_left_over_res_allocation", player=player)
+
+    def handle_right_click_res_on_card(self, event, card_id, res_type, player):
+        valid_cards = self.action_handler('get_valid_cards_for_resource_move', player=player, card_id=card_id, res_type=res_type)
+
+        result = None
+        if not valid_cards:
+            messagebox.showerror("Error", "can not move this resource to other power plant")
+            return
+        elif len(valid_cards) == 1:
+            confirm = messagebox.askyesno("Confirm", f"Move resource {res_type} from Power Plant {card_id} to {valid_cards[0]}?")
+            if confirm:
+                result = self.action_handler('execute_move_resource', player=player, source_card_id=card_id, target_card_id=valid_cards[0], res_type=res_type)
+        else:
+            target = self.show_power_plant_selection_menu(valid_cards, res_type, cost=0)  # cost not used here
+            if target:
+                result = self.action_handler('execute_move_resource', player=player, source_card_id=card_id, target_card_id=target, res_type=res_type)
+        
+        if result is None or not isinstance(result, dict) or not result.get("success", False):
+            messagebox.showerror("Error", "Failed to move resource")
 

@@ -44,6 +44,7 @@ class OwnedPowerPlant:
         self.resources_on_card = {}
         self.resources_to_purchase = {}
         self.resources_to_power = {}
+        self.resources_on_hold = {}
 
     def __repr__(self):
         return (
@@ -61,6 +62,7 @@ class Player:
         self.cities = []
         self.phase_completed = False
         self.money_to_pay = 0
+        self.left_resources_from_removed_pp = {}
 
     def __repr__(self):
         return (
@@ -87,9 +89,9 @@ class Game:
         self.occupied_regions = set()
 
         self.step = 1
-        self.phase_index = 0
+        self.phase_index = -1
         # round is useful when determining player order
-        self.round = 1
+        self.round = 0
 
         self.current_player_index = 0
 
@@ -97,7 +99,6 @@ class Game:
 
         self.ui = PowerGridUI(root, self.get_game_state, self.handle_action)
         self.initialize_game_ui()
-        self.sort_players()
         self.next_phase()
 
         # [TODO] choose regions before game starts
@@ -117,6 +118,15 @@ class Game:
             PHASES[self.phase_index], self.players[self.current_player_index].name
         )
         # [TODO] May need to sort players
+        if PHASES[self.phase_index] == "Auction":
+            self.round += 1
+            self.sort_players()
+            print(f"Round: {self.round}")
+        elif PHASES[self.phase_index] == "Resources":
+            if self.round == 1:
+                self.sort_players()
+            self.players.reverse()
+        
         self.ui.create_player_info(self.players, PHASES[self.phase_index])
         self.ui.update_player_control()
 
@@ -133,11 +143,11 @@ class Game:
 
     def initialize_players(self):
         player_names = ["Player 1", "Player 2", "Player 3", "Player 4"]
-        power_plants = [["16", "21"], ["19"], ["11", "18", "12"], ["15", "34"]]
+        power_plants = [["16", "21", "29"], ["19"], ["11", "12"], ["15", "34"]]
         pp_resources = [
             {"16": {"oil": 3}, "21": {"coal": 1, "oil": 1}},
             {"19": {"trash": 3}},
-            {"11": {"uranium": 1}, "18": {}, "12": {"coal": 2}},
+            {"11": {"uranium": 1}, "12": {"coal": 1, "oil": 1}},
             {"15": {"coal": 2}, "34": {"uranium": 2}},
         ]
         random.shuffle(self.colors)
@@ -169,25 +179,50 @@ class Game:
             self.start_auction(kwargs["card_id"], kwargs["card_image_tk"])
         elif action == "player_pass":
             self.player_pass()
+            
         elif action == "purchase_resources":
             self.confirm_purchase()
+
         elif action == "add_res_to_purchase":
             return self.add_res_to_purchase(kwargs["res_type"], kwargs["cost"])
+        
         elif action == "put_back_res_to_purchase":
             return self.put_back_res_to_purchase(kwargs["card_id"], kwargs["res_type"])
+        
+        elif action == "confirm_left_over_res_allocation":
+            self.confirm_left_over_res_allocation(kwargs["player"])
+        
+        elif action == "get_possible_pp_for_left_res":
+            return self.get_possible_pp_for_left_res(kwargs["player"], kwargs["res_type"])
+        
+        elif action == "add_left_over_res_on_hold":
+            return self.add_left_over_res_on_hold(kwargs["player"], kwargs["card_id"], kwargs["res_type"])
+
+        elif action == "put_back_res_to_left_over":
+            return self.put_back_res_to_left_over(kwargs["player"], kwargs["card_id"], kwargs["res_type"])
+        
         elif action == "add_res_to_power":
             return self.add_res_to_power(kwargs["card_id"], kwargs["res_type"])
+        
         elif action == "remove_res_from_power":
             return self.remove_res_from_power(kwargs["card_id"], kwargs["res_type"])
+        
         elif action == "can_build_house":
             return self.can_build_house(kwargs["city_name"])
+        
         elif action == "build_house":
-            return self.build_house(kwargs["city_name"], kwargs["cost"])
+            self.build_house(kwargs["city_name"], kwargs["cost"])
+        
         elif action == "generate_power":
             return self.generate_power()
+        
+        elif action == "get_valid_cards_for_resource_move":
+            return self.get_valid_cards_for_resource_move(kwargs["player"], kwargs["card_id"], kwargs["res_type"])
+        elif action == "execute_move_resource":
+            return self.execute_move_resource(kwargs["player"], kwargs["source_card_id"], kwargs["target_card_id"], kwargs["res_type"])
 
     def sort_players(self):
-        if self.round == 1:
+        if self.round == 1 and PHASES[self.phase_index] == "Auction":
             random.shuffle(self.players)
         else:
             self.players.sort(
@@ -228,15 +263,42 @@ class Game:
         message = f"{winner.name} won the auction for power plant {card_id} with a bid of {final_bid}."
         messagebox.showinfo("Auction Result", message)
 
-        # Update the player's money and power plants
         winner.money -= final_bid
-        # Create a new OwnedPowerPlant using the card from the deck:
         card_obj = self.deck.cards.get(card_id)
         new_owned_pp = OwnedPowerPlant(card_obj)
+        # Add the new owned power plant first
         winner.owned_power_plants[card_id] = new_owned_pp
 
-        winner.phase_completed = True
+        need_to_allocate_resources = False
+        if len(winner.owned_power_plants) > 3:
+            power_plant_to_remove = self.ui.show_power_plant_removal_menu(
+                [cp for cp in list(winner.owned_power_plants.keys()) if cp != card_id]
+            )
+            removed_pp = winner.owned_power_plants.pop(power_plant_to_remove)
+            if sum(removed_pp.resources_on_card.values()) > 0:
+                # Move resources from the removed power plant to new_owned_pp if possible,
+                # If not, leave them unallocated.
+                can_move_res_to_new_pp = self.can_move_resources_to_new_pp(new_owned_pp, removed_pp.resources_on_card)
 
+                print("CAN MOVE RES: ", can_move_res_to_new_pp)
+                if not can_move_res_to_new_pp:
+                    need_to_allocate_resources = True
+                    winner.left_resources_from_removed_pp = removed_pp.resources_on_card
+                    self.ui.update_player_info(winner, PHASES[self.phase_index])
+                    self.ui.update_player_control(winner)
+        
+        self.remove_power_plant_from_market(card_id)
+
+        if not need_to_allocate_resources:
+            winner.phase_completed = True
+
+            # Update the player info UI
+            self.ui.create_player_info(self.players, PHASES[self.phase_index])
+
+            # Determine the next player to start the auction
+            self.determine_next_player()
+    
+    def remove_power_plant_from_market(self, card_id):
         # Remove the purchased power plant from the market
         self.power_plant_market.remove_card_from_market(card_id)
 
@@ -249,19 +311,13 @@ class Game:
             pass  # Placeholder
 
         # Update the power plant market UI
-        self.ui.create_power_plant_market(
-            self.step, self.power_plant_market.current_market
-        )
-
-        # Update the player info UI
-        self.ui.create_player_info(self.players, PHASES[self.phase_index])
-
-        # Determine the next player to start the auction
-        self.determine_next_player()
+        self.ui.create_power_plant_market(self.step, self.power_plant_market.current_market)
+        
 
     def determine_next_player(self):
         print("next player")
         if not self.players[self.current_player_index].phase_completed:
+            self.ui.update_player_control()
             pass
         else:
             while self.current_player_index < len(self.players):
@@ -286,8 +342,8 @@ class Game:
 
     def can_hold_resource(self, owned_pp, res_type):
         card_type = owned_pp.card.card_type
-        print(f"CARD TYPE: {card_type}")
-        print(f"RES TYPE: {res_type}")
+        phase = PHASES[self.phase_index]
+
         if card_type == "renewable":
             return False
         if card_type == "hybrid":
@@ -298,10 +354,55 @@ class Game:
                 return False
 
         cur_token_num = sum(owned_pp.resources_on_card.values())
-        purchase_token_num = sum(owned_pp.resources_to_purchase.values())
+        if phase == "Resources":
+            purchase_token_num = sum(owned_pp.resources_to_purchase.values())
+        else:
+            # this is the case when the player is in the auction phase and has not confirmed left-over resource allocation   
+            purchase_token_num = sum(owned_pp.resources_on_hold.values())
+        
+        print(
+            f"cur_token_num: {cur_token_num}, purchase_token_num: {purchase_token_num}, resource_number: {owned_pp.card.resource_number}")
         if cur_token_num + purchase_token_num < 2 * owned_pp.card.resource_number:
             return True
         return False
+    
+    def get_possible_pp_for_left_res(self, player, res_type):
+        candidates = []
+        for card_id, owned_pp in player.owned_power_plants.items():
+            if self.can_hold_resource(owned_pp, res_type):
+                candidates.append(card_id)
+        
+        return candidates
+
+    def can_move_resources_to_new_pp(self, new_owned_pp, removed_resources):
+        """
+        Attempts to move resource tokens from removed_resources to new_owned_pp.
+        If True, also move the resources to new_owned_pp.
+        """
+        if new_owned_pp.card.card_type == "renewable":
+            return False
+
+        if len(removed_resources) > 1 and new_owned_pp.card.card_type != "hybrid":
+            return False
+
+        if len(removed_resources) > 1 and sum(removed_resources.values()) > 2 * new_owned_pp.card.resource_number:
+            return False
+        
+        if len(removed_resources) ==1:
+            if new_owned_pp.card.card_type != "hybrid":
+                if next(iter(removed_resources.keys())) != new_owned_pp.card.card_type:
+                     return False
+            else:
+                if next(iter(removed_resources.keys())) not in ["coal", "oil"]:
+                    return False
+
+        if len(removed_resources) ==1 and next(iter(removed_resources.values())) > 2 * new_owned_pp.card.resource_number:
+            return False
+        
+        for res, count in removed_resources.items():
+            new_owned_pp.resources_on_card[res] = count
+    
+        return True
 
     def get_valid_cards_for_res(self, res_type):
         current_player = self.players[self.current_player_index]
@@ -370,10 +471,23 @@ class Game:
             self.ui.update_player_control()
             return {"success": True}
         else:
+            return {"success": False, "message": "Could not add resource back to market."}
+    
+    def put_back_res_to_left_over(self, player, card_id, res_type):
+        owned_pp = player.owned_power_plants.get(card_id)
+        if not owned_pp:
+            return {"success": False, "message": "Power plant not found."}
+        if owned_pp.resources_on_hold.get(res_type, 0) <= 0:
             return {
                 "success": False,
-                "message": "Could not add resource back to market.",
+                "message": f"No {res_type} resource on hold for this card {card_id}.",
             }
+    
+        owned_pp.resources_on_hold[res_type] -= 1
+        player.left_resources_from_removed_pp[res_type] = player.left_resources_from_removed_pp.get(res_type, 0) + 1
+        self.ui.update_player_info(player, PHASES[self.phase_index])
+
+        return {"success": True}
     
     def add_res_to_power(self, card_id, res_type):
         current_player = self.players[self.current_player_index]
@@ -412,6 +526,22 @@ class Game:
         self.ui.update_player_info(current_player, PHASES[self.phase_index])
         return {"success": True}
 
+    def add_left_over_res_on_hold(self, player, card_id, res_type):
+        print(f"left resources: {player.left_resources_from_removed_pp}")
+
+        owned_pp = player.owned_power_plants.get(card_id)
+        print("owned pp: ", owned_pp)
+
+        if player.left_resources_from_removed_pp[res_type] < 0:
+            return False
+
+        player.left_resources_from_removed_pp[res_type] -= 1
+        owned_pp.resources_on_hold[res_type] = owned_pp.resources_on_hold.get(res_type, 0) + 1
+
+        self.ui.update_player_info(player, PHASES[self.phase_index])
+
+        return True
+
     def confirm_purchase(self):
         current_player = self.players[self.current_player_index]
 
@@ -428,6 +558,21 @@ class Game:
         self.ui.update_player_info(current_player, PHASES[self.phase_index])
         current_player.phase_completed = True
         self.determine_next_player()
+    
+    def confirm_left_over_res_allocation(self, player):
+        for owned_pp in player.owned_power_plants.values():
+            for res_type, amount in owned_pp.resources_on_hold.items():
+                if amount > 0:
+                    owned_pp.resources_on_card[res_type] = owned_pp.resources_on_card.get(res_type, 0) + amount
+            owned_pp.resources_on_hold = {}
+        
+        player.left_resources_from_removed_pp = {}
+
+        player.phase_completed = True
+        
+        self.ui.create_player_info(self.players, PHASES[self.phase_index])
+        self.determine_next_player()
+        
 
     def can_build_house(self, city_name):
         current_player = self.players[self.current_player_index]
@@ -508,10 +653,28 @@ class Game:
         self.resources.return_resources_to_remaining(current_player.owned_power_plants)
         current_player.money += cash
         self.ui.update_player_info(current_player, PHASES[self.phase_index])
+        print(f'remaining resources: {self.resources.remaining_resources}')
         self.ui.update_resource_section(self.resources.remaining_resources)
         self.player_pass()
 
         return {"success": True, "message": f"Generated {cash} cash from {cities_can_power} cities"}
+
+    def get_valid_cards_for_resource_move(self, player, source_card_id, res_type):
+        valid = [cid for cid, pp in player.owned_power_plants.items() 
+                 if cid != source_card_id and self.can_hold_resource(pp, res_type)]
+        return valid
+
+    def execute_move_resource(self, player, source_card_id, target_card_id, res_type):
+        source_pp = player.owned_power_plants.get(source_card_id)
+        target_pp = player.owned_power_plants.get(target_card_id)
+        if not source_pp or not target_pp:
+            return {"success": False, "message": "Power plant not found."}
+        if source_pp.resources_on_card.get(res_type, 0) <= 0:
+            return {"success": False, "message": "No resource to move."}
+        source_pp.resources_on_card[res_type] -= 1
+        target_pp.resources_on_card[res_type] = target_pp.resources_on_card.get(res_type, 0) + 1
+        self.ui.update_player_info(player, PHASES[self.phase_index])
+        return {"success": True}
 
 
 if __name__ == "__main__":
